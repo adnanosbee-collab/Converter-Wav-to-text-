@@ -1,0 +1,84 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: wav-transcriber-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wav_transcriber
+      POSTGRES_USER: wav_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is missing from .env}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wav_app -d wav_transcriber"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: wav-transcriber-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    image: wav-transcriber:phase1
+    container_name: wav-transcriber-api
+    restart: unless-stopped
+    working_dir: /app
+    command: ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql+psycopg://wav_app:${POSTGRES_PASSWORD}@db:5432/wav_transcriber"
+      REDIS_URL: "redis://redis:6379/0"
+      UPLOAD_DIR: "/uploads"
+    volumes:
+      - .:/app
+      - ${HOME}/wav-whisper-models:/models
+      - uploads_data:/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    image: wav-transcriber:phase1
+    container_name: wav-transcriber-worker
+    restart: unless-stopped
+    working_dir: /app
+    command: ["rq", "worker", "--url", "redis://redis:6379/0", "transcriptions"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql+psycopg://wav_app:${POSTGRES_PASSWORD}@db:5432/wav_transcriber"
+      REDIS_URL: "redis://redis:6379/0"
+      UPLOAD_DIR: "/uploads"
+    volumes:
+      - .:/app
+      - ${HOME}/wav-whisper-models:/models
+      - uploads_data:/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads_data:
